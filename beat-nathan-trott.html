@@ -38,10 +38,6 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
   border:1px solid var(--line);border-radius:12px;padding:4px 10px;text-align:center;min-width:56px}
 .stat b{display:block;font-size:18px;line-height:1.15;font-variant-numeric:tabular-nums}
 .stat span{font-size:9.5px;color:var(--muted);text-transform:uppercase;letter-spacing:.08em}
-#hint{background:rgba(4,20,39,.78);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);
-  border:1px solid var(--line);border-radius:99px;padding:5px 12px;font-size:12px;color:var(--ink);transition:opacity .4s}
-#hint.gone{opacity:0}
-
 #banner{position:absolute;left:0;right:0;top:53%;display:flex;flex-direction:column;align-items:center;gap:6px;
   pointer-events:none;opacity:0;padding:0 10px;text-align:center;z-index:4}
 #banner .big{font:900 clamp(34px,9vw,76px)/1 Impact,Haettenschweiler,"Arial Black",sans-serif;letter-spacing:.02em;
@@ -76,8 +72,21 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
 @keyframes pop{0%{opacity:0;transform:scale(.45) rotate(-5deg)}60%{opacity:1;transform:scale(1.12) rotate(2deg)}100%{opacity:1;transform:scale(1) rotate(0)}}
 
 #panel{display:grid;gap:10px;padding:10px 10px max(12px,env(safe-area-inset-bottom));grid-template-areas:"spots" "sliders" "shoot";background:linear-gradient(180deg,rgba(10,39,69,.98),rgba(4,19,38,.99));}
-#spots{grid-area:spots;display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:1px 2px;margin:0 -2px}
+#spotNav{grid-area:spots;position:relative;min-width:0}
+#spots{display:flex;gap:7px;overflow-x:auto;scrollbar-width:none;padding:1px 2px;margin:0 -2px;overscroll-behavior-x:contain;touch-action:pan-x}
 #spots::-webkit-scrollbar{display:none}
+.spot-swipe-cue{display:none;align-items:center;justify-content:center;gap:8px;padding:4px 0 1px;
+  color:#b7dcff;font-size:10px;font-weight:900;letter-spacing:.12em;line-height:1;
+  text-align:center;white-space:nowrap;pointer-events:none;text-shadow:0 0 10px rgba(74,163,255,.32)}
+.spot-swipe-cue .arrow{display:inline-block;color:#4aa3ff;font-size:21px;line-height:.7;
+  animation:spotSwipeNudge .8s ease-in-out infinite alternate}
+.spot-swipe-cue .arrow:last-child{animation-delay:.4s}
+@keyframes spotSwipeNudge{from{transform:translateX(-3px);opacity:.65}to{transform:translateX(3px);opacity:1}}
+@media(max-width:859px){
+  #spotNav.is-scrollable .spot-swipe-cue{display:flex}
+  #spots{scroll-snap-type:x proximity}
+  #spots .chip{scroll-snap-align:start}
+}
 .chip{flex:none;border:1px solid var(--line);background:var(--panel);color:var(--ink);border-radius:99px;padding:8px 13px;
   font:700 13px/1.1 inherit;font-family:inherit;cursor:pointer;white-space:nowrap;transition:background .15s,color .15s,border-color .15s}
 .chip small{display:block;font-size:10px;font-weight:600;opacity:.75;margin-top:2px}
@@ -115,6 +124,7 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:3
   .ctl{padding:9px 14px 5px}
   #shoot{font-size:30px}
   #spots{flex-wrap:wrap;overflow:visible}
+  .spot-swipe-cue{display:none!important}
 }
 @media (max-height:640px) and (max-width:859px){
   header{padding-bottom:4px}.brand p{display:none}
@@ -147,13 +157,19 @@ input[type=range]:focus-visible{outline:2px solid var(--accent);outline-offset:3
         <div class="stat"><b id="sSaved">0</b><span>Saved</span></div>
         <div class="stat"><b id="sMissed">0</b><span>Missed</span></div>
       </div>
-      <div id="hint">Tap the pitch or press Space to shoot</div>
     </div>
     <div id="banner" aria-live="polite"></div>
   </div>
 
   <section id="panel">
-    <div id="spots" role="group" aria-label="Shooting position"></div>
+    <div id="spotNav">
+      <div id="spots" role="group" aria-label="Shooting position"></div>
+      <div class="spot-swipe-cue" aria-hidden="true">
+        <span class="arrow">‹</span>
+        <span>SWIPE LEFT OR RIGHT FOR MORE POSITIONS</span>
+        <span class="arrow">›</span>
+      </div>
+    </div>
 
     <div id="sliders">
       <div class="ctl">
@@ -1041,7 +1057,6 @@ function shoot() {
   if (plan.dive) shot.dive = { t0: plan.dive.t0, dur: plan.dive.dur, start, final: divePose(plan.dive.T, start) };
   state = 'flight'; recover = null; setShootEnabled(false);
   stats.shots++; updateStats(); sfx.kick();
-  $('#hint').classList.add('gone');
   hideBanner();
 }
 function launchConfetti() {
@@ -1217,6 +1232,16 @@ SPOTS.forEach((s, i) => {
   b.addEventListener('click', () => { if (state === 'aim') { setSpot(i); b.blur(); } });
   spotsEl.appendChild(b);
 });
+
+// Only show the swipe prompt on screens where the position row really overflows.
+const spotNav = $('#spotNav');
+function updateSpotSwipeCue() {
+  const canScroll = spotsEl.scrollWidth > spotsEl.clientWidth + 4;
+  spotNav.classList.toggle('is-scrollable', canScroll);
+}
+spotsEl.addEventListener('scroll', updateSpotSwipeCue, { passive: true });
+window.addEventListener('resize', updateSpotSwipeCue);
+requestAnimationFrame(updateSpotSwipeCue);
 
 const sliders = {
   power: { el: $('#power'), out: $('#powerOut'), fmt: v => v + '%', lo: 0 },
