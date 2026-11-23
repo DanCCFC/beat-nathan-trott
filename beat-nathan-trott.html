@@ -47,6 +47,8 @@ canvas{position:absolute;inset:0;width:100%;height:100%;display:block;touch-acti
   border-radius:99px;padding:5px 14px;border:1px solid var(--line)}
 #banner.save .big{color:var(--accent)}
 #banner.post .big,#banner.var .big{color:var(--accent2)}
+#banner.wind .big{color:#a8e7ff;text-shadow:0 0 16px rgba(91,190,255,.78),0 6px 0 rgba(0,0,0,.38),0 0 34px rgba(91,190,255,.4)}
+#banner.wind .sub{border-color:rgba(130,210,255,.55);box-shadow:0 0 20px rgba(91,190,255,.2)}
 #banner.goal .big{color:#65f09a;text-shadow:0 0 12px rgba(101,240,154,.65),0 6px 0 rgba(0,0,0,.38),0 0 34px rgba(255,210,63,.55);}
 #banner.goal .sub{background:rgba(4,20,39,.94);border-color:rgba(101,240,154,.55);box-shadow:0 0 22px rgba(101,240,154,.18)}
 #banner.goal .big{animation:goalDance .34s ease-in-out infinite}
@@ -330,9 +332,10 @@ function planShot(spot, params, rnd = Math.random) {
   const wood = !inner && Math.abs(x) < HALF + R * 0.8 && y < GOAL_H + R * 0.8;
 
   if (inner) {
-    const t0 = Math.max(0.04, t - 0.42);
-    plan.dive = { t0, dur: t - t0, T: { x, y: Math.max(y, 0.18) } };
-    if (rnd() < 0.1) {
+    const eventRoll = rnd(); // 10% VAR, 10% wind, 80% classic Trott save.
+    if (eventRoll < 0.1) {
+      const t0 = Math.max(0.04, t - 0.42);
+      plan.dive = { t0, dur: t - t0, T: { x, y: Math.max(y, 0.18) } };
       // Rare VAR drama: the ball really enters the goal, strikes the back net,
       // and settles in the net before the decision is overturned.
       plan.outcome = 'var';
@@ -364,7 +367,76 @@ function planShot(spot, params, rnd = Math.random) {
         push();
       }
       plan.netImpact = netImpact || { x, y, at: t + 0.18 };
+    } else if (eventRoll < 0.2) {
+      // The shot is initially on target. A freak stadium gust hits it late,
+      // while Trott commits to a full dive in the opposite direction.
+      plan.outcome = 'wind';
+      const shotSide = Math.abs(x) > 0.25 ? Math.sign(x)
+        : (Math.abs(L.vx) > 0.2 ? Math.sign(L.vx) : (rnd() < 0.5 ? -1 : 1));
+      plan.windDirection = shotSide;
+      const windStartT = Math.max(0.04, t - 0.26);
+      const windDiveStart = Math.max(0.04, t - 0.42);
+
+      // Re-simulate from the kick so the gust bends the real ball trajectory,
+      // rather than simply moving the ball after the goal-line decision.
+      const wb = { x: spot.x, y: R, z: spot.z, vx: L.vx, vy: L.vy, vz: L.vz, spin: 0 };
+      xs.length = 1; ys.length = 1; zs.length = 1; sp.length = 1;
+      xs[0] = wb.x; ys[0] = wb.y; zs[0] = wb.z; sp[0] = wb.spin;
+      const pushWind = () => { xs.push(wb.x); ys.push(wb.y); zs.push(wb.z); sp.push(wb.spin); };
+      let gustStarted = false, windCrossTime = null;
+
+      for (let i = 1; i <= 8 / DT; i++) {
+        const now = i * DT;
+        if (!gustStarted && now >= windStartT) {
+          gustStarted = true;
+          const remaining = Math.max(DT, t - now);
+          const targetOutward = HALF + R + 0.5;
+          const currentOutward = shotSide * wb.x;
+          const requiredOutwardSpeed = clamp((targetOutward - currentOutward) / remaining * 1.15, 20, 64);
+          wb.vx = shotSide * Math.max(shotSide * wb.vx, requiredOutwardSpeed);
+          wb.vy += 1.25;
+          wb.spin += shotSide * 1.8;
+          plan.windAt = now;
+          plan.windPoint = { x: wb.x, y: wb.y, z: wb.z };
+        }
+
+        const pz = wb.z, px = wb.x, py = wb.y;
+        stepBall(wb, L.omega);
+        if (wb.z <= 0 && pz > 0) {
+          const f = pz / (pz - wb.z);
+          wb.x = px + (wb.x - px) * f;
+          wb.y = py + (wb.y - py) * f;
+          wb.z = 0;
+          pushWind();
+          windCrossTime = (i - 1 + f) * DT;
+          break;
+        }
+        pushWind();
+      }
+
+      // If the gust has done its job, the ball crosses the goal line outside
+      // the frame. Let it continue travelling away for a moment before reset.
+      if (windCrossTime === null) windCrossTime = t;
+      plan.tCross = windCrossTime;
+      plan.resultAt = windCrossTime;
+      plan.cross = { x: wb.x, y: wb.y };
+      for (let i = 1; i <= 1.55 / DT; i++) {
+        stepBall(wb, L.omega);
+        pushWind();
+        if (wb.z < -9.2) { plan.hide = true; break; }
+        if (wb.y <= R + 0.001 && Math.hypot(wb.vx, wb.vz) < 0.15) break;
+      }
+
+      plan.dive = {
+        t0: windDiveStart,
+        dur: Math.max(0.18, windCrossTime - windDiveStart),
+        T: { x: -shotSide * 3.2, y: clamp(y, 0.65, 2.0) }
+      };
+      plan.sub = 'A huge gust blows it off course!';
+      plan.readyAt = plan.resultAt + 1.75;
     } else {
+      const t0 = Math.max(0.04, t - 0.42);
+      plan.dive = { t0, dur: t - t0, T: { x, y: Math.max(y, 0.18) } };
       plan.outcome = 'save';
       const s = chooseSave(b, rnd);
       plan.type = s.type; plan.sub = s.sub;
@@ -904,19 +976,40 @@ function drawGuide(g) {
 }
 
 /* ===================== effects ===================== */
-function addBurst(x, y, z, kind) { fx.push({ x, y, z, t: 0, kind }); }
+function addBurst(x, y, z, kind, dir = 1) { fx.push({ x, y, z, t: 0, kind, dir }); }
 function drawFx(g, dt) {
   for (const e of fx) {
     e.t += dt;
     const p = proj([e.x, e.y, e.z]); if (!p) continue;
-    const k = e.t / 0.45; if (k >= 1) continue;
-    const base = Math.max(10, p.k * 0.3), r1 = base * (0.7 + k * 1.6), r2 = r1 + base * (0.9 - k * 0.5);
+    const life = e.kind === 'wind' ? 0.95 : 0.45;
+    const k = e.t / life; if (k >= 1) continue;
+    const base = Math.max(10, p.k * 0.3);
+    if (e.kind === 'wind') {
+      // Sweeping pale-blue air streaks give the gust a visible direction and force.
+      const dir = e.dir || 1, fade = 1 - k;
+      g.save(); g.lineCap = 'round'; g.lineJoin = 'round';
+      for (let i = 0; i < 5; i++) {
+        const y = p.y + (i - 2) * base * 0.42 + Math.sin(k * 8 + i * 1.7) * base * 0.16;
+        const x1 = p.x - dir * base * (1.8 + i * 0.12);
+        const x2 = p.x + dir * base * (2.5 + k * 2.8 + i * 0.16);
+        g.strokeStyle = 'rgba(165,225,255,' + (0.72 * fade) + ')';
+        g.lineWidth = Math.max(1.4, base * (0.105 - i * 0.008) * fade);
+        g.beginPath();
+        g.moveTo(x1, y);
+        g.bezierCurveTo(x1 + dir * base * 1.1, y - base * 0.36,
+          x2 - dir * base * 0.9, y + base * 0.34, x2, y - base * 0.04);
+        g.stroke();
+      }
+      g.restore();
+      continue;
+    }
+    const r1 = base * (0.7 + k * 1.6), r2 = r1 + base * (0.9 - k * 0.5);
     g.strokeStyle = e.kind === 'post' ? 'rgba(255,122,89,' + (1 - k) + ')' : 'rgba(255,255,255,' + (1 - k) + ')';
     g.lineWidth = Math.max(2, base * 0.18 * (1 - k)); g.lineCap = 'round'; g.beginPath();
     for (let i = 0; i < 12; i++) { const a = i * Math.PI / 6 + 0.2; g.moveTo(p.x + Math.cos(a) * r1, p.y + Math.sin(a) * r1); g.lineTo(p.x + Math.cos(a) * r2, p.y + Math.sin(a) * r2); }
     g.stroke();
   }
-  fx = fx.filter(e => e.t < 0.45);
+  fx = fx.filter(e => e.t < (e.kind === 'wind' ? 0.95 : 0.45));
 }
 
 /* ===================== sound (user-supplied stadium audio) ==================== */
@@ -1091,6 +1184,9 @@ function showResult() {
     stats.scored++;
     addBurst(p.cross.x, p.cross.y, -1.6, 'goal'); shakeT = 0.2;
     launchConfetti(); sfx.cheer();
+  } else if (p.outcome === 'wind') {
+    main = 'THE WIND!!!'; sub = 'A huge gust blows it wide!'; cls = 'wind'; stats.missed++;
+    shakeT = 0.36; sfx.miss();
   } else if (p.outcome === 'save') {
     main = pick(SAVE_MAIN); sub = p.sub; cls = 'save'; stats.saved++;
     addBurst(p.cross.x, p.cross.y, KZ, 'save'); shakeT = 0.22; sfx.save();
@@ -1147,6 +1243,11 @@ function frame(now) {
     shot.t += dt * TS;
     const p = shot.plan;
     if (!shot.shown && shot.t >= p.resultAt) showResult();
+    if (p.outcome === 'wind' && !shot.windShown && p.windPoint && shot.t >= p.windAt) {
+      shot.windShown = true;
+      addBurst(p.windPoint.x, p.windPoint.y, p.windPoint.z, 'wind', p.windDirection);
+      shakeT = 0.5;
+    }
     if (p.outcome === 'var' && !shot.netHit && p.netImpact && shot.t >= p.netImpact.at) {
       shot.netHit = true; hitGoalNet(p.netImpact.x, p.netImpact.y);
     }
